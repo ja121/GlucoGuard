@@ -1,0 +1,19 @@
+# Ignore Python junk
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Ignore venv
+venv/
+env/
+Lib/
+Scripts/
+Include/
+pyvenv.cfg
+
+# Ignore raw data only
+src/data/Participant_Questionnaires/*
+src/data/Case_Report_Forms/*
+src/data/DCLP3_Clinical_Protocol_Pivotal_Study_v10.0 5 NOV 2018.pdf
