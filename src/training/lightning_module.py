@@ -109,9 +109,44 @@ class GlucoseLightningModule(pl.LightningModule):
         }
 
     def _surveillance_error_grid(self, pred, target):
-        """Placeholder for Surveillance Error Grid Analysis"""
-        # This is a complex clinical metric. Returning dummy values for now.
-        return {'A': 1.0, 'B': 0.0, 'C': 0.0, 'D': 0.0, 'E': 0.0}
+        """
+        Simplified Surveillance Error Grid (SEG) Analysis.
+        Categorizes predictions into risk zones.
+        A: No risk, B: Slight risk, C: Moderate risk, D: Significant risk, E: Extreme risk
+        """
+
+        # Convert to numpy for easier handling
+        pred = pred.cpu().numpy()
+        target = target.cpu().numpy()
+
+        # Define risk zones based on simplified criteria inspired by SEG principles
+        # This is a simplified implementation. A real implementation would use the exact SEG boundaries.
+        total_points = len(pred)
+        if total_points == 0:
+            return {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'E': 0}
+
+        # Zone A (no risk)
+        zone_a = np.sum((np.abs(pred - target) < 15) | (np.abs(pred - target) / target < 0.15))
+
+        # Zone E (extreme risk)
+        zone_e = np.sum((target < 70) & (pred > 180) | (target > 180) & (pred < 70))
+
+        # Zone D (significant risk)
+        zone_d = np.sum(((target > 240) & (pred < 100)) | ((target < 100) & (pred > 240))) - zone_e
+
+        # Zone C (moderate risk)
+        zone_c = np.sum(((target > 180) & (pred < 70)) | ((target < 70) & (pred > 180))) - zone_e - zone_d
+
+        # Zone B (slight risk)
+        zone_b = total_points - zone_a - zone_c - zone_d - zone_e
+
+        return {
+            'A': zone_a / total_points,
+            'B': zone_b / total_points,
+            'C': zone_c / total_points,
+            'D': zone_d / total_points,
+            'E': zone_e / total_points,
+        }
 
     def configure_optimizers(self):
         # AdamW with weight decay

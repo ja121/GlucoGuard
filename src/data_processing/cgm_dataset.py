@@ -8,6 +8,7 @@ from sklearn.preprocessing import RobustScaler
 import warnings
 
 from src.data_processing.adapter import AwesomeCGMAdapter
+from src.features import glycemic_variability as gv
 
 warnings.filterwarnings('ignore')
 
@@ -84,13 +85,16 @@ class AdvancedCGMDataset(Dataset):
         df['acceleration'] = df.groupby('subject_id')['roc_5min'].diff()
 
         # Glucose variability metrics
-        df['mage'] = self._calculate_mage(df)  # Mean Amplitude of Glycemic Excursions
-        df['modd'] = self._calculate_modd(df)  # Mean of Daily Differences
-        df['conga'] = self._calculate_conga(df)  # Continuous Overall Net Glycemic Action
+        df['mage'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_mage(x.tolist()))
+        df['modd'] = df.groupby('subject_id').apply(lambda x: gv.calculate_modd(x['glucose'].tolist(), x['timestamp'].tolist())).reset_index(level=0, drop=True)
+        df['conga'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_conga(x.tolist()))
 
-        # Risk indices
-        df['lbgi'] = self._calculate_lbgi(df['glucose'])  # Low Blood Glucose Index
-        df['hbgi'] = self._calculate_hbgi(df['glucose'])  # High Blood Glucose Index
+        lbgi, hbgi = gv.calculate_lbgi_hbgi(df['glucose'].tolist())
+        df['lbgi'] = lbgi
+        df['hbgi'] = hbgi
+
+        df['adrr'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_adrr(x.tolist()))
+        df['j_index'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_j_index(x.tolist()))
 
         # Frequency domain features (FFT)
         if self.config.use_fft:
@@ -125,6 +129,8 @@ class AdvancedCGMDataset(Dataset):
 
             # Scale features
             scaler = RobustScaler()
+            # Handle potential NaN values in feature columns before scaling
+            subject_data[feature_cols] = subject_data[feature_cols].fillna(0)
             subject_data[feature_cols] = scaler.fit_transform(subject_data[feature_cols])
 
             for i in range(0, len(subject_data) - self.config.sequence_length - self.config.prediction_horizon, stride):
@@ -170,34 +176,59 @@ class AdvancedCGMDataset(Dataset):
 
         return sequences
 
-    def _calculate_lbgi(self, glucose: pd.Series) -> pd.Series:
-        """Low Blood Glucose Index - risk metric"""
-        f_glucose = 1.509 * (np.log(glucose)**1.084 - 5.381)
-        rl = np.where(f_glucose < 0, 10 * f_glucose**2, 0)
-        return pd.Series(rl, index=glucose.index)
-
-    def _calculate_hbgi(self, glucose: pd.Series) -> pd.Series:
-        """High Blood Glucose Index"""
-        f_glucose = 1.509 * (np.log(glucose)**1.084 - 5.381)
-        rh = np.where(f_glucose > 0, 10 * f_glucose**2, 0)
-        return pd.Series(rh, index=glucose.index)
-
-    def _calculate_mage(self, df: pd.DataFrame) -> pd.Series:
-        """Placeholder for MAGE calculation"""
-        return pd.Series(0, index=df.index)
-
-    def _calculate_modd(self, df: pd.DataFrame) -> pd.Series:
-        """Placeholder for MODD calculation"""
-        return pd.Series(0, index=df.index)
-
-    def _calculate_conga(self, df: pd.DataFrame) -> pd.Series:
-        """Placeholder for CONGA calculation"""
-        return pd.Series(0, index=df.index)
-
     def _add_fft_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Placeholder for FFT feature calculation"""
+        """Add FFT features"""
+
+        def get_fft_features(x):
+            from scipy.fft import fft
+
+            # Perform FFT
+            fft_vals = fft(x.values)
+
+            # Get dominant frequencies and their magnitudes
+            fft_freq = np.fft.fftfreq(len(x), d=self.config.sampling_rate)
+
+            # Get the absolute values of the FFT
+            fft_abs = np.abs(fft_vals)
+
+            # Find the top 3 dominant frequencies
+            sorted_indices = np.argsort(fft_abs)[::-1]
+
+            features = {}
+            for i in range(1, 4): # Get top 3 frequencies (index 0 is the DC component)
+                if i < len(sorted_indices):
+                    idx = sorted_indices[i]
+                    features[f'fft_freq_{i}'] = fft_freq[idx]
+                    features[f'fft_mag_{i}'] = fft_abs[idx]
+                else:
+                    features[f'fft_freq_{i}'] = 0
+                    features[f'fft_mag_{i}'] = 0
+            return pd.Series(features)
+
+        fft_features = df.groupby('subject_id')['glucose'].apply(get_fft_features)
+        df = df.join(fft_features, on='subject_id')
+
         return df
 
     def _add_wavelet_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Placeholder for wavelet feature calculation"""
+        """Add wavelet features"""
+        import pywt
+
+        def get_wavelet_features(x):
+            coeffs = pywt.dwt(x.values, 'db4')
+            cA, cD = coeffs
+
+            features = {
+                'wavelet_cA_mean': np.mean(cA),
+                'wavelet_cA_std': np.std(cA),
+                'wavelet_cA_energy': np.sum(np.square(cA)),
+                'wavelet_cD_mean': np.mean(cD),
+                'wavelet_cD_std': np.std(cD),
+                'wavelet_cD_energy': np.sum(np.square(cD)),
+            }
+            return pd.Series(features)
+
+        wavelet_features = df.groupby('subject_id')['glucose'].apply(get_wavelet_features)
+        df = df.join(wavelet_features, on='subject_id')
+
         return df
