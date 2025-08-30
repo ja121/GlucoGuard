@@ -58,8 +58,7 @@ class AdvancedCGMDataset(Dataset):
 
     def _engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Extract 50+ features from CGM signal"""
-        print("Columns at start of _engineer_features:", df.columns)
-        print("Glucose head:", df['glucose'].head())
+
         # Temporal features
         df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
         df['day_of_week'] = pd.to_datetime(df['timestamp']).dt.dayofweek
@@ -117,10 +116,6 @@ class AdvancedCGMDataset(Dataset):
     def _create_sequences(self) -> List[Tuple[torch.Tensor, torch.Tensor, dict]]:
         """Create multi-scale sequences with metadata"""
         sequences = []
-
-        # This part needs to be adapted to handle the dataframe from the adapter
-        # The original code assumes a single dataframe, but we have multiple datasets
-        # For now, let's assume self.data is a single dataframe as the original code did
 
         # Get all feature columns
         feature_cols = [col for col in self.data.columns if col not in ['subject_id', 'timestamp', 'glucose']]
