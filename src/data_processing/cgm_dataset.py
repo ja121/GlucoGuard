@@ -117,6 +117,12 @@ class AdvancedCGMDataset(Dataset):
         """Create multi-scale sequences with metadata"""
         sequences = []
 
+
+        # This part needs to be adapted to handle the dataframe from the adapter
+        # The original code assumes a single dataframe, but we have multiple datasets
+        # For now, let's assume self.data is a single dataframe as the original code did
+
+
         # Get all feature columns
         feature_cols = [col for col in self.data.columns if col not in ['subject_id', 'timestamp', 'glucose']]
 
@@ -210,7 +216,6 @@ class AdvancedCGMDataset(Dataset):
 
         fft_features = df.groupby('subject_id')['glucose'].apply(get_fft_features)
         df = df.merge(fft_features, on='subject_id')
-
         return df
 
     def _add_wavelet_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -239,5 +244,6 @@ class AdvancedCGMDataset(Dataset):
 
         wavelet_features = df.groupby('subject_id')['glucose'].apply(get_wavelet_features)
         df = df.merge(wavelet_features, on='subject_id')
+
 
         return df
