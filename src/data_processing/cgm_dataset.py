@@ -56,6 +56,19 @@ class AdvancedCGMDataset(Dataset):
     def __getitem__(self, idx):
         return self.sequences[idx]
 
+    def _calculate_iglu_metrics(self, df_subject):
+        import iglu_py as iglu
+        # iglu-py expects columns 'id', 'time', 'gl'
+        iglu_df = df_subject.rename(columns={'subject_id': 'id', 'timestamp': 'time', 'glucose': 'gl'})
+        # Ensure correct types
+        iglu_df['time'] = pd.to_datetime(iglu_df['time'])
+        iglu_df['gl'] = pd.to_numeric(iglu_df['gl'])
+
+        # Calculate all metrics
+        all_metrics = iglu.all_metrics(iglu_df)
+        return all_metrics.iloc[0] # Return the row of metrics as a Series
+
+
     def _engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Extract 50+ features from CGM signal"""
 
@@ -86,22 +99,10 @@ class AdvancedCGMDataset(Dataset):
         # Acceleration (2nd derivative)
         df['acceleration'] = df.groupby('subject_id')['roc_5min'].diff()
 
-        # Glucose variability metrics
-        df['mage'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_mage(x.tolist()))
-
-        modd_series = df.groupby('subject_id').apply(lambda x: gv.calculate_modd(x['glucose'].tolist(), x['timestamp'].tolist()))
-        df = df.merge(modd_series.rename('modd'), left_on='subject_id', right_index=True)
-
-        df['conga'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_conga(x.tolist()))
-
-        # Calculate LBGI and HBGI per-reading
-        risk_df = gv.calculate_lbgi_hbgi(df['glucose'])
-        df['lbgi'] = risk_df['lbgi']
-        df['hbgi'] = risk_df['hbgi']
-
-        # Calculate summary risk metrics per subject
-        df['adrr'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_adrr(x))
-        df['j_index'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_j_index(x.tolist()))
+        # Glucose variability metrics using iglu-py
+        iglu_metrics = df.groupby('subject_id').apply(self._calculate_iglu_metrics)
+        df = df.merge(iglu_metrics, on='subject_id')
+  
 
         # Frequency domain features (FFT)
         if self.config.use_fft:
@@ -116,11 +117,6 @@ class AdvancedCGMDataset(Dataset):
     def _create_sequences(self) -> List[Tuple[torch.Tensor, torch.Tensor, dict]]:
         """Create multi-scale sequences with metadata"""
         sequences = []
-
-
-        # This part needs to be adapted to handle the dataframe from the adapter
-        # The original code assumes a single dataframe, but we have multiple datasets
-        # For now, let's assume self.data is a single dataframe as the original code did
 
 
         # Get all feature columns
@@ -216,6 +212,7 @@ class AdvancedCGMDataset(Dataset):
 
         fft_features = df.groupby('subject_id')['glucose'].apply(get_fft_features)
         df = df.merge(fft_features, on='subject_id')
+
         return df
 
     def _add_wavelet_features(self, df: pd.DataFrame) -> pd.DataFrame:
