@@ -68,6 +68,7 @@ class AdvancedCGMDataset(Dataset):
         all_metrics = iglu.all_metrics(iglu_df)
         return all_metrics.iloc[0] # Return the row of metrics as a Series
 
+
     def _engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Extract 50+ features from CGM signal"""
 
@@ -101,6 +102,7 @@ class AdvancedCGMDataset(Dataset):
         # Glucose variability metrics using iglu-py
         iglu_metrics = df.groupby('subject_id').apply(self._calculate_iglu_metrics)
         df = df.merge(iglu_metrics, on='subject_id')
+  
 
         # Frequency domain features (FFT)
         if self.config.use_fft:
@@ -115,6 +117,7 @@ class AdvancedCGMDataset(Dataset):
     def _create_sequences(self) -> List[Tuple[torch.Tensor, torch.Tensor, dict]]:
         """Create multi-scale sequences with metadata"""
         sequences = []
+
 
         # Get all feature columns
         feature_cols = [col for col in self.data.columns if col not in ['subject_id', 'timestamp', 'glucose']]
@@ -238,5 +241,6 @@ class AdvancedCGMDataset(Dataset):
 
         wavelet_features = df.groupby('subject_id')['glucose'].apply(get_wavelet_features)
         df = df.merge(wavelet_features, on='subject_id')
+
 
         return df
