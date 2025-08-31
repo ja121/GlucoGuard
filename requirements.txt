@@ -1,0 +1,29 @@
+# Core scientific computing
+pandas==2.3.2
+scikit-learn==1.7.1
+matplotlib==3.10.5
+seaborn==0.13.2
+scipy==1.16.1
+
+# Deep Learning
+pytorch-lightning==2.2.0
+
+# Advanced ML
+xgboost==3.0.4
+lightgbm==4.6.0
+optuna==4.5.0
+
+# Time Series
+statsmodels==0.14.5
+PyWavelets==1.9.0
+iglu-py
+
+# Transformers
+transformers==4.55.4
+einops==0.8.1
+
+# Monitoring & Debugging
+tensorboard==2.20.0
+wandb==0.21.2
+rich==14.1.0
+tqdm==4.67.1
