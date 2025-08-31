@@ -31,21 +31,23 @@ class CGMConfig:
     severe_hyper: float = 250.0
 
 class AdvancedCGMDataset(Dataset):
-    def __init__(self, dataset_name: str, config: CGMConfig, mode='train'):
-        self.adapter = AwesomeCGMAdapter()
+    def __init__(self, config: CGMConfig, mode='train', dataset_name: str = None, dataframe: Optional[pd.DataFrame] = None):
         self.config = config
         self.mode = mode
 
-        # Load dataset using adapter
-        raw_data = self.adapter.load_dataset(dataset_name)
-        if raw_data is None:
-            raise ValueError(f"Could not load dataset {dataset_name}")
-
-        # Prepare for model
-        self.data = self.adapter.prepare_for_model(raw_data)
+        if dataframe is not None:
+            raw_data = dataframe
+        elif dataset_name is not None:
+            self.adapter = AwesomeCGMAdapter()
+            raw_data = self.adapter.load_dataset(dataset_name)
+            if raw_data is None:
+                raise ValueError(f"Could not load dataset {dataset_name}")
+            raw_data = self.adapter.prepare_for_model(raw_data)
+        else:
+            raise ValueError("Either dataset_name or dataframe must be provided.")
 
         # Continue with original processing...
-        self.data = self._engineer_features(self.data)
+        self.data = self._engineer_features(raw_data)
         self.sequences = self._create_sequences()
 
     def __len__(self):
@@ -86,14 +88,19 @@ class AdvancedCGMDataset(Dataset):
 
         # Glucose variability metrics
         df['mage'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_mage(x.tolist()))
-        df['modd'] = df.groupby('subject_id').apply(lambda x: gv.calculate_modd(x['glucose'].tolist(), x['timestamp'].tolist())).reset_index(level=0, drop=True)
+
+        modd_series = df.groupby('subject_id').apply(lambda x: gv.calculate_modd(x['glucose'].tolist(), x['timestamp'].tolist()))
+        df = df.merge(modd_series.rename('modd'), left_on='subject_id', right_index=True)
+
         df['conga'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_conga(x.tolist()))
 
-        lbgi, hbgi = gv.calculate_lbgi_hbgi(df['glucose'].tolist())
-        df['lbgi'] = lbgi
-        df['hbgi'] = hbgi
+        # Calculate LBGI and HBGI per-reading
+        risk_df = gv.calculate_lbgi_hbgi(df['glucose'])
+        df['lbgi'] = risk_df['lbgi']
+        df['hbgi'] = risk_df['hbgi']
 
-        df['adrr'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_adrr(x.tolist()))
+        # Calculate summary risk metrics per subject
+        df['adrr'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_adrr(x))
         df['j_index'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_j_index(x.tolist()))
 
         # Frequency domain features (FFT)
@@ -110,9 +117,11 @@ class AdvancedCGMDataset(Dataset):
         """Create multi-scale sequences with metadata"""
         sequences = []
 
+
         # This part needs to be adapted to handle the dataframe from the adapter
         # The original code assumes a single dataframe, but we have multiple datasets
         # For now, let's assume self.data is a single dataframe as the original code did
+
 
         # Get all feature columns
         feature_cols = [col for col in self.data.columns if col not in ['subject_id', 'timestamp', 'glucose']]
@@ -206,8 +215,7 @@ class AdvancedCGMDataset(Dataset):
             return pd.Series(features)
 
         fft_features = df.groupby('subject_id')['glucose'].apply(get_fft_features)
-        df = df.join(fft_features, on='subject_id')
-
+        df = df.merge(fft_features, on='subject_id')
         return df
 
     def _add_wavelet_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -215,6 +223,12 @@ class AdvancedCGMDataset(Dataset):
         import pywt
 
         def get_wavelet_features(x):
+            if len(x) < 4: # pywt.dwt requires a minimum length
+                return pd.Series({
+                    'wavelet_cA_mean': 0, 'wavelet_cA_std': 0, 'wavelet_cA_energy': 0,
+                    'wavelet_cD_mean': 0, 'wavelet_cD_std': 0, 'wavelet_cD_energy': 0,
+                })
+
             coeffs = pywt.dwt(x.values, 'db4')
             cA, cD = coeffs
 
@@ -229,6 +243,7 @@ class AdvancedCGMDataset(Dataset):
             return pd.Series(features)
 
         wavelet_features = df.groupby('subject_id')['glucose'].apply(get_wavelet_features)
-        df = df.join(wavelet_features, on='subject_id')
+        df = df.merge(wavelet_features, on='subject_id')
+
 
         return df

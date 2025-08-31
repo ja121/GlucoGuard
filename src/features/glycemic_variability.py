@@ -117,6 +117,7 @@ def calculate_conga(glucose_values: List[float], n_hours: int = 1, interval_minu
 
     return np.sqrt(np.mean(differences))
 
+
 def calculate_lbgi_hbgi(glucose_values: List[float]) -> Tuple[float, float]:
     """
     Calculate Low Blood Glucose Index (LBGI) and High Blood Glucose Index (HBGI)
@@ -124,53 +125,49 @@ def calculate_lbgi_hbgi(glucose_values: List[float]) -> Tuple[float, float]:
     These indices measure the risk of hypoglycemia and hyperglycemia.
 
     Args:
-        glucose_values: List of glucose measurements in mg/dL
 
     Returns:
-        Tuple of (LBGI, HBGI) values
+        DataFrame with 'lbgi' and 'hbgi' columns
     """
-    if len(glucose_values) == 0:
-        return np.nan, np.nan
+    if glucose_series.empty:
+        return pd.DataFrame({'lbgi': [], 'hbgi': []})
 
-    values = np.array(glucose_values)
+    values = glucose_series.values
 
     # Transform glucose values to risk space
-    # f(BG) = 1.509 * (ln(BG)^1.084 - 5.381) for BG in mg/dL
+
+  
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         f_bg = 1.509 * (np.power(np.log(values), 1.084) - 5.381)
 
     # Calculate risk values
-    # rl(BG) = 22.77 * f(BG)^2 if f(BG) < 0, else 0 (hypoglycemia risk)
-    # rh(BG) = 22.77 * f(BG)^2 if f(BG) > 0, else 0 (hyperglycemia risk)
-
     rl = np.where(f_bg < 0, 22.77 * f_bg**2, 0)
     rh = np.where(f_bg > 0, 22.77 * f_bg**2, 0)
 
-    lbgi = np.mean(rl)
-    hbgi = np.mean(rh)
+    return pd.DataFrame({'lbgi': rl, 'hbgi': rh}, index=glucose_series.index)
 
-    return lbgi, hbgi
 
-def calculate_adrr(glucose_values: List[float]) -> float:
+def calculate_adrr(glucose_series: pd.Series) -> float:
     """
     Calculate Average Daily Risk Range (ADRR)
-
+    
     ADRR combines LBGI and HBGI to provide an overall risk assessment.
-
+    
     Args:
-        glucose_values: List of glucose measurements
-
+        glucose_series: Pandas Series of glucose measurements
+    
     Returns:
         ADRR value
     """
-    lbgi, hbgi = calculate_lbgi_hbgi(glucose_values)
+   risk_df = calculate_lbgi_hbgi(glucose_series)
+    
+   if risk_df.empty:
+      return np.nan
+        
+    # ADRR is typically calculated as the mean of the sum of LBGI and HBGI
+    return (risk_df['lbgi'] + risk_df['hbgi']).mean()
 
-    if np.isnan(lbgi) or np.isnan(hbgi):
-        return np.nan
-
-    # ADRR is typically calculated as the sum of LBGI and HBGI
-    return lbgi + hbgi
 
 def calculate_j_index(glucose_values: List[float]) -> float:
     """
