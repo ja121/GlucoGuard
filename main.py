@@ -10,7 +10,7 @@ from src.data_processing.adapter import AwesomeCGMAdapter
 
 def main(args):
     """Main training script"""
-
+    
     # 1. Configuration from args
     config = CGMConfig(
         learning_rate=args.learning_rate,
@@ -22,7 +22,7 @@ def main(args):
         n_attention_heads=args.n_attention_heads,
         n_attention_layers=args.n_attention_layers,
     )
-
+    
     # 2. Load and split data
     print(f"Loading dataset: {args.dataset_name}...")
     try:
@@ -33,10 +33,10 @@ def main(args):
         print(f"Error: Dataset file for '{args.dataset_name}' not found.")
         print("Please make sure the data is downloaded and placed in the 'cgm_data' directory.")
         return
-
+    
     subject_ids = prepared_data['subject_id'].unique()
     train_ids, val_ids = train_test_split(subject_ids, test_size=0.2, random_state=42)
-
+    
     train_df = prepared_data[prepared_data['subject_id'].isin(train_ids)]
     val_df = prepared_data[prepared_data['subject_id'].isin(val_ids)]
     print(f"Data loaded. Training on {len(train_ids)} subjects, validating on {len(val_ids)} subjects.")
@@ -44,7 +44,7 @@ def main(args):
     # 3. Create Datasets and DataLoaders
     train_dataset = AdvancedCGMDataset(config=config, dataframe=train_df, mode='train')
     val_dataset = AdvancedCGMDataset(config=config, dataframe=val_df, mode='val')
-
+    
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
@@ -56,14 +56,14 @@ def main(args):
 
     # 5. Model
     model = HierarchicalGlucosePredictor(
-        config=config,
-        n_cgm_features=n_cgm_features,
+        config=config, 
+        n_cgm_features=n_cgm_features, 
         n_wearable_features=n_wearable_features
     )
-
+    
     # 6. Lightning Module
     lightning_module = GlucoseLightningModule(model=model, config=config)
-
+    
     # 7. Trainer
     trainer = pl.Trainer(
         max_epochs=args.epochs,
@@ -75,7 +75,7 @@ def main(args):
         ],
         logger=pl.loggers.TensorBoardLogger("training_logs/", name=args.dataset_name)
     )
-
+    
     # 8. Start training
     print("Starting training...")
     trainer.fit(lightning_module, train_loader, val_loader)
@@ -83,7 +83,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train the GlucoGuard model.")
-
+    
     # --- Data and Training arguments ---
     parser.add_argument('--dataset_name', type=str, default='Brown2019', help='Name of the dataset to train on.')
     parser.add_argument('--batch_size', type=int, default=64)
@@ -99,6 +99,6 @@ if __name__ == '__main__':
     parser.add_argument('--d_model_fusion', type=int, default=128)
     parser.add_argument('--n_attention_heads', type=int, default=8)
     parser.add_argument('--n_attention_layers', type=int, default=3)
-
+    
     args = parser.parse_args()
     main(args)
