@@ -17,6 +17,7 @@ warnings.filterwarnings('ignore')
 class CGMConfig:
     """Configuration for CGM processing and model hyperparameters"""
     # Data processing
+
     sequence_length: int = 36 # 3 hours at 5-min intervals
     prediction_horizon: int = 6 # 30 minutes ahead
     sampling_rate: int = 5 # minutes
@@ -76,6 +77,7 @@ class AdvancedCGMDataset(Dataset):
         """Extract 50+ features from CGM signal"""
         print("Columns at start of _engineer_features:", df.columns)
         print("Glucose head:", df['glucose'].head())
+
         # Temporal features
         df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
         df['day_of_week'] = pd.to_datetime(df['timestamp']).dt.dayofweek
@@ -103,6 +105,7 @@ class AdvancedCGMDataset(Dataset):
         # Acceleration (2nd derivative)
         df['acceleration'] = df.groupby('subject_id')['roc_5min'].diff()
 
+
         # Glucose variability metrics
         df['mage'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_mage(x.tolist()))
 
@@ -120,6 +123,7 @@ class AdvancedCGMDataset(Dataset):
         df['adrr'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_adrr(x))
         df['j_index'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_j_index(x.tolist()))
 
+
         # Frequency domain features (FFT)
         if self.config.use_fft:
             df = self._add_fft_features(df)
@@ -127,6 +131,7 @@ class AdvancedCGMDataset(Dataset):
         # Wavelet features
         if self.config.use_wavelets:
             df = self._add_wavelet_features(df)
+
 
         # Trend arrows
         df = ta.process_cgm_data_with_trends(df)
@@ -162,6 +167,7 @@ class AdvancedCGMDataset(Dataset):
             col for col in self.data.columns
             if col not in id_and_target_cols + non_numeric_features
         ]
+
 
         for subject_id in self.data['subject_id'].unique():
             subject_data = self.data[self.data['subject_id'] == subject_id].copy()
@@ -207,6 +213,7 @@ class AdvancedCGMDataset(Dataset):
                 targets['glucose'] = torch.tensor(glucose_targets, dtype=torch.float32)
                 targets['risk'] = torch.tensor(hypo_targets + hyper_targets, dtype=torch.float32)
 
+
                 # Separate CGM and wearable features
                 wearable_base_cols = ['hr', 'hrv', 'resp_rate', 'skin_temp', 'spo2', 'accel_x', 'accel_y', 'accel_z', 'sleep_stage']
                 wearable_feature_cols = [col for col in feature_cols if any(base in col for base in wearable_base_cols)]
@@ -227,6 +234,7 @@ class AdvancedCGMDataset(Dataset):
                     'hour': seq_data.iloc[-1]['hour'],
                     'day_of_week': seq_data.iloc[-1]['day_of_week']
                 }
+
 
                 sequences.append((cgm_features, wearable_features, targets, metadata))
 
@@ -261,6 +269,7 @@ class AdvancedCGMDataset(Dataset):
                     features[f'fft_mag_{i}'] = 0
             return pd.Series(features)
 
+
         fft_features_series = df.groupby('subject_id')['glucose'].apply(get_fft_features)
         fft_features_df = fft_features_series.unstack()
         df = df.merge(fft_features_df, left_on='subject_id', right_index=True)
@@ -291,8 +300,10 @@ class AdvancedCGMDataset(Dataset):
             }
             return pd.Series(features)
 
+
         wavelet_features_series = df.groupby('subject_id')['glucose'].apply(get_wavelet_features)
         wavelet_features_df = wavelet_features_series.unstack()
         df = df.merge(wavelet_features_df, left_on='subject_id', right_index=True)
+
 
         return df

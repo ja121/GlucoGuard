@@ -16,7 +16,7 @@ class TemporalBlock(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
-
+        
         self.conv2 = nn.Conv1d(d_model, d_model, kernel_size, padding=padding, dilation=dilation)
         self.norm2 = nn.LayerNorm(d_model)
         self.relu2 = nn.ReLU()
@@ -44,7 +44,7 @@ class HierarchicalGlucosePredictor(nn.Module):
             nn.ELU(),
             nn.Dropout(config.dropout_rate)
         )
-
+        
         if self.n_wearable_features > 0:
             # Input embedding for wearable features
             self.wearable_projection = nn.Sequential(
@@ -53,7 +53,7 @@ class HierarchicalGlucosePredictor(nn.Module):
                 nn.ELU(),
                 nn.Dropout(config.dropout_rate)
             )
-
+            
             # Fusion layer
             self.fusion_layer = nn.Sequential(
                 nn.Linear(config.d_model_cgm + config.d_model_wearable, config.d_model_fusion),
@@ -71,22 +71,22 @@ class HierarchicalGlucosePredictor(nn.Module):
 
         # Positional encoding
         self.positional_encoding = self._create_positional_encoding(config.sequence_length, config.d_model_fusion)
-
+        
         # Multi-scale temporal blocks
         self.temporal_blocks = nn.ModuleList([
             TemporalBlock(d_model=config.d_model_fusion, kernel_size=k, dilation=d, dropout=config.dropout_rate)
             for k, d in [(3, 1), (3, 2), (3, 4), (5, 1), (5, 2)]
         ])
-
+        
         # Attention layers
         self.attention_layers = nn.ModuleList([
             MultiHeadTemporalAttention(d_model=config.d_model_fusion, n_heads=config.n_attention_heads)
             for _ in range(config.n_attention_layers)
         ])
-
+        
         # GRN for feature selection
         self.grn = GatedResidualNetwork(d_model=config.d_model_fusion, d_hidden=config.d_model_fusion * 2)
-
+        
         # Multi-task heads
         head_hidden_dim = config.d_model_fusion // 2
         self.glucose_head = nn.Sequential(
@@ -95,21 +95,21 @@ class HierarchicalGlucosePredictor(nn.Module):
             nn.Dropout(config.dropout_rate),
             nn.Linear(head_hidden_dim, 3)  # Predict 30min, 1hr, 1.5hr
         )
-
+        
         self.risk_head = nn.Sequential(
             nn.Linear(config.d_model_fusion, head_hidden_dim),
             nn.ELU(),
             nn.Dropout(config.dropout_rate),
             nn.Linear(head_hidden_dim, 6)  # Hypo/Hyper for 3 time horizons
         )
-
+        
         # Uncertainty quantification
         self.uncertainty_head = nn.Sequential(
             nn.Linear(config.d_model_fusion, head_hidden_dim // 2),
             nn.ELU(),
             nn.Linear(head_hidden_dim // 2, 3)  # Uncertainty for each prediction
         )
-
+    
     def _create_positional_encoding(self, max_len, d_model):
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -122,7 +122,7 @@ class HierarchicalGlucosePredictor(nn.Module):
     def forward(self, x_cgm, x_wearable=None, return_attention=False):
         # Input projection for CGM features
         x = self.cgm_projection(x_cgm)
-
+        
         # Process and fuse wearable data if available
         if self.n_wearable_features > 0 and x_wearable is not None and x_wearable.numel() > 0:
             x_wearable = self.wearable_projection(x_wearable)
@@ -132,39 +132,39 @@ class HierarchicalGlucosePredictor(nn.Module):
 
         # Add positional encoding
         x = x + self.positional_encoding[:, :x.size(1)]
-
+        
         # Multi-scale temporal processing
         temporal_features = []
         for block in self.temporal_blocks:
             temporal_features.append(block(x))
-
+        
         # Aggregate multi-scale features
         x = torch.stack(temporal_features, dim=1).mean(dim=1)
-
+        
         # Self-attention with residual connections
         attention_weights = []
         for attn_layer in self.attention_layers:
             x, attn_w = attn_layer(x)
             attention_weights.append(attn_w)
-
+        
         # Gated residual network
         x = self.grn(x)
-
+        
         # Global pooling
         x_pooled = x.mean(dim=1)  # [batch, d_model]
-
+        
         # Multi-task predictions
         glucose_pred = self.glucose_head(x_pooled)
         risk_pred = torch.sigmoid(self.risk_head(x_pooled))
         uncertainty = F.softplus(self.uncertainty_head(x_pooled))
-
+        
         outputs = {
             'glucose': glucose_pred,
             'risk': risk_pred,
             'uncertainty': uncertainty
         }
-
+        
         if return_attention:
             outputs['attention'] = attention_weights
-
+        
         return outputs
