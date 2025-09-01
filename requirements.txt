@@ -1,4 +1,5 @@
 # Core scientific computing
+numpy<2.0
 pandas==2.3.2
 scikit-learn==1.7.1
 matplotlib==3.10.5
@@ -6,6 +7,7 @@ seaborn==0.13.2
 scipy==1.16.1
 
 # Deep Learning
+torch
 pytorch-lightning==2.2.0
 
 # Advanced ML
@@ -16,8 +18,6 @@ optuna==4.5.0
 # Time Series
 statsmodels==0.14.5
 PyWavelets==1.9.0
-iglu-py
-
 
 # Transformers
 transformers==4.55.4

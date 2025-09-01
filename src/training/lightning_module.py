@@ -1,3 +1,4 @@
+import numpy as np
 import pytorch_lightning as pl
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
@@ -15,46 +16,46 @@ class GlucoseLightningModule(pl.LightningModule):
         self.config = config
         self.loss_fn = GlucosePredictionLoss()
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, cgm_features, wearable_features=None):
+        return self.model(cgm_features, wearable_features)
 
     def training_step(self, batch, batch_idx):
-        x, y, metadata = batch
-        predictions = self(x)
-
+        cgm_features, wearable_features, y, metadata = batch
+        predictions = self(cgm_features, wearable_features)
+        
         losses = self.loss_fn(predictions, y)
-
+        
         # Log metrics
         self.log('train/loss', losses['total'], prog_bar=True)
         self.log('train/glucose_mae', F.l1_loss(predictions['glucose'], y['glucose']))
-
+        
         # Calculate and log clinical metrics
         clinical_metrics = self._calculate_clinical_metrics(predictions, y)
         for name, value in clinical_metrics.items():
             self.log(f'train/{name}', value)
-
+        
         return losses['total']
 
     def validation_step(self, batch, batch_idx):
-        x, y, metadata = batch
-        predictions = self(x)
-
+        cgm_features, wearable_features, y, metadata = batch
+        predictions = self(cgm_features, wearable_features)
+        
         losses = self.loss_fn(predictions, y)
-
+        
         # Calculate comprehensive metrics
         metrics = {
             'val/loss': losses['total'],
             'val/glucose_mae': F.l1_loss(predictions['glucose'], y['glucose']),
             'val/glucose_rmse': torch.sqrt(F.mse_loss(predictions['glucose'], y['glucose'])),
         }
-
+        
         # Clinical metrics
         clinical_metrics = self._calculate_clinical_metrics(predictions, y)
         for name, value in clinical_metrics.items():
             metrics[f'val/{name}'] = value
-
+        
         self.log_dict(metrics, prog_bar=True)
-
+        
         return metrics
 
     def _calculate_clinical_metrics(self, pred, target):
@@ -65,7 +66,7 @@ class GlucoseLightningModule(pl.LightningModule):
 
         glucose_pred = pred['glucose'][:, 0]  # 30-min prediction
         glucose_true = target['glucose'][:, 0]
-
+        
         valid_indices = ~torch.isnan(glucose_true)
         glucose_pred = glucose_pred[valid_indices]
         glucose_true = glucose_true[valid_indices]
@@ -75,14 +76,14 @@ class GlucoseLightningModule(pl.LightningModule):
 
         # MARD (Mean Absolute Relative Difference)
         mard = (torch.abs(glucose_pred - glucose_true) / glucose_true * 100).mean()
-
+        
         # Surveillance Error Grid Analysis
         seg_scores = self._surveillance_error_grid(glucose_pred, glucose_true)
-
+        
         # Hypoglycemia detection metrics
         hypo_pred = pred['risk'][:, 0] > 0.5
         hypo_true = target['risk'][:, 0] > 0.5
-
+        
         valid_risk_indices = ~torch.isnan(hypo_true)
         hypo_pred = hypo_pred[valid_risk_indices]
         hypo_true = hypo_true[valid_risk_indices]
@@ -95,11 +96,11 @@ class GlucoseLightningModule(pl.LightningModule):
             tp = ((hypo_pred == 1) & (hypo_true == 1)).sum().float()
             fp = ((hypo_pred == 1) & (hypo_true == 0)).sum().float()
             fn = ((hypo_pred == 0) & (hypo_true == 1)).sum().float()
-
+            
             sensitivity = tp / (tp + fn + 1e-8)
             precision = tp / (tp + fp + 1e-8)
             f1 = 2 * (precision * sensitivity) / (precision + sensitivity + 1e-8)
-
+        
         return {
             'mard': mard,
             'seg_a': seg_scores['A'],
@@ -114,10 +115,10 @@ class GlucoseLightningModule(pl.LightningModule):
         Categorizes predictions into risk zones.
         A: No risk, B: Slight risk, C: Moderate risk, D: Significant risk, E: Extreme risk
         """
-
+        
         # Convert to numpy for easier handling
-        pred = pred.cpu().numpy()
-        target = target.cpu().numpy()
+        pred = pred.detach().cpu().numpy()
+        target = target.detach().cpu().numpy()
 
         # Define risk zones based on simplified criteria inspired by SEG principles
         # This is a simplified implementation. A real implementation would use the exact SEG boundaries.
@@ -127,19 +128,19 @@ class GlucoseLightningModule(pl.LightningModule):
 
         # Zone A (no risk)
         zone_a = np.sum((np.abs(pred - target) < 15) | (np.abs(pred - target) / target < 0.15))
-
+        
         # Zone E (extreme risk)
         zone_e = np.sum((target < 70) & (pred > 180) | (target > 180) & (pred < 70))
-
+        
         # Zone D (significant risk)
         zone_d = np.sum(((target > 240) & (pred < 100)) | ((target < 100) & (pred > 240))) - zone_e
-
+        
         # Zone C (moderate risk)
         zone_c = np.sum(((target > 180) & (pred < 70)) | ((target < 70) & (pred > 180))) - zone_e - zone_d
-
+        
         # Zone B (slight risk)
         zone_b = total_points - zone_a - zone_c - zone_d - zone_e
-
+        
         return {
             'A': zone_a / total_points,
             'B': zone_b / total_points,
@@ -152,11 +153,11 @@ class GlucoseLightningModule(pl.LightningModule):
         # AdamW with weight decay
         optimizer = AdamW(
             self.parameters(),
-            lr=1e-3,
-            weight_decay=1e-5,
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
             betas=(0.9, 0.999)
         )
-
+        
         # Cosine annealing with warm restarts
         scheduler = CosineAnnealingWarmRestarts(
             optimizer,
@@ -164,7 +165,7 @@ class GlucoseLightningModule(pl.LightningModule):
             T_mult=2,
             eta_min=1e-6
         )
-
+        
         return {
             'optimizer': optimizer,
             'lr_scheduler': {

@@ -9,12 +9,15 @@ import warnings
 
 from src.data_processing.adapter import AwesomeCGMAdapter
 from src.features import glycemic_variability as gv
+from src.features import trend_arrows as ta
 
 warnings.filterwarnings('ignore')
 
 @dataclass
 class CGMConfig:
-    """Configuration for CGM processing"""
+    """Configuration for CGM processing and model hyperparameters"""
+    # Data processing
+
     sequence_length: int = 36 # 3 hours at 5-min intervals
     prediction_horizon: int = 6 # 30 minutes ahead
     sampling_rate: int = 5 # minutes
@@ -29,6 +32,20 @@ class CGMConfig:
     hyper_threshold: float = 180.0
     severe_hypo: float = 54.0
     severe_hyper: float = 250.0
+
+    # Model Architecture
+    d_model_cgm: int = 128
+    d_model_wearable: int = 64
+    d_model_fusion: int = 128
+    n_attention_heads: int = 8
+    n_attention_layers: int = 3
+
+    # Regularization
+    dropout_rate: float = 0.1
+
+    # Optimizer
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-5
 
 class AdvancedCGMDataset(Dataset):
     def __init__(self, config: CGMConfig, mode='train', dataset_name: str = None, dataframe: Optional[pd.DataFrame] = None):
@@ -56,21 +73,10 @@ class AdvancedCGMDataset(Dataset):
     def __getitem__(self, idx):
         return self.sequences[idx]
 
-    def _calculate_iglu_metrics(self, df_subject):
-        import iglu_py as iglu
-        # iglu-py expects columns 'id', 'time', 'gl'
-        iglu_df = df_subject.rename(columns={'subject_id': 'id', 'timestamp': 'time', 'glucose': 'gl'})
-        # Ensure correct types
-        iglu_df['time'] = pd.to_datetime(iglu_df['time'])
-        iglu_df['gl'] = pd.to_numeric(iglu_df['gl'])
-
-        # Calculate all metrics
-        all_metrics = iglu.all_metrics(iglu_df)
-        return all_metrics.iloc[0] # Return the row of metrics as a Series
-
-
     def _engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Extract 50+ features from CGM signal"""
+        print("Columns at start of _engineer_features:", df.columns)
+        print("Glucose head:", df['glucose'].head())
 
         # Temporal features
         df['hour'] = pd.to_datetime(df['timestamp']).dt.hour
@@ -99,10 +105,24 @@ class AdvancedCGMDataset(Dataset):
         # Acceleration (2nd derivative)
         df['acceleration'] = df.groupby('subject_id')['roc_5min'].diff()
 
-        # Glucose variability metrics using iglu-py
-        iglu_metrics = df.groupby('subject_id').apply(self._calculate_iglu_metrics)
-        df = df.merge(iglu_metrics, on='subject_id')
-  
+
+        # Glucose variability metrics
+        df['mage'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_mage(x.tolist()))
+
+        modd_series = df.groupby('subject_id').apply(lambda x: gv.calculate_modd(x['glucose'].tolist(), x['timestamp'].tolist()))
+        df = df.merge(modd_series.rename('modd'), left_on='subject_id', right_index=True)
+
+        df['conga'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_conga(x.tolist()))
+
+        # Calculate LBGI and HBGI per-reading
+        risk_df = gv.calculate_lbgi_hbgi(df['glucose'])
+        df['lbgi'] = risk_df['lbgi']
+        df['hbgi'] = risk_df['hbgi']
+
+        # Calculate summary risk metrics per subject
+        df['adrr'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_adrr(x))
+        df['j_index'] = df.groupby('subject_id')['glucose'].transform(lambda x: gv.calculate_j_index(x.tolist()))
+
 
         # Frequency domain features (FFT)
         if self.config.use_fft:
@@ -112,15 +132,42 @@ class AdvancedCGMDataset(Dataset):
         if self.config.use_wavelets:
             df = self._add_wavelet_features(df)
 
+
+        # Trend arrows
+        df = ta.process_cgm_data_with_trends(df)
+
+        # Wearable data features (optional)
+        wearable_cols = ['hr', 'hrv', 'resp_rate', 'skin_temp', 'spo2', 'accel_x', 'accel_y', 'accel_z']
+        for col in wearable_cols:
+            if col in df.columns:
+                # Fill missing values
+                df[col] = df.groupby('subject_id')[col].transform(lambda x: x.fillna(method='ffill').fillna(method='bfill'))
+
+                # Calculate rolling statistics
+                for window in [6, 12, 24, 48]:
+                    df[f'{col}_mean_{window}'] = df.groupby('subject_id')[col].transform(
+                        lambda x: x.rolling(window, min_periods=1).mean()
+                    )
+                    df[f'{col}_std_{window}'] = df.groupby('subject_id')[col].transform(
+                        lambda x: x.rolling(window, min_periods=1).std()
+                    )
+
         return df
 
     def _create_sequences(self) -> List[Tuple[torch.Tensor, torch.Tensor, dict]]:
         """Create multi-scale sequences with metadata"""
         sequences = []
 
+        # Define categorical and non-feature columns
+        non_numeric_features = ['trend_arrow', 'trend_description', 'predicted_30min_change']
+        id_and_target_cols = ['subject_id', 'timestamp', 'glucose']
 
-        # Get all feature columns
-        feature_cols = [col for col in self.data.columns if col not in ['subject_id', 'timestamp', 'glucose']]
+        # Get only the numeric feature columns for scaling
+        feature_cols = [
+            col for col in self.data.columns
+            if col not in id_and_target_cols + non_numeric_features
+        ]
+
 
         for subject_id in self.data['subject_id'].unique():
             subject_data = self.data[self.data['subject_id'] == subject_id].copy()
@@ -166,18 +213,30 @@ class AdvancedCGMDataset(Dataset):
                 targets['glucose'] = torch.tensor(glucose_targets, dtype=torch.float32)
                 targets['risk'] = torch.tensor(hypo_targets + hyper_targets, dtype=torch.float32)
 
-                # Extract features
-                features = torch.tensor(seq_data[feature_cols].values, dtype=torch.float32)
 
-                # Metadata
+                # Separate CGM and wearable features
+                wearable_base_cols = ['hr', 'hrv', 'resp_rate', 'skin_temp', 'spo2', 'accel_x', 'accel_y', 'accel_z', 'sleep_stage']
+                wearable_feature_cols = [col for col in feature_cols if any(base in col for base in wearable_base_cols)]
+                cgm_feature_cols = [col for col in feature_cols if col not in wearable_feature_cols]
+
+                cgm_features = torch.tensor(seq_data[cgm_feature_cols].values, dtype=torch.float32)
+
+                # Create a placeholder tensor for wearable features if they don't exist.
+                # This is crucial for the default collate function of the DataLoader.
+                wearable_features = torch.empty(cgm_features.shape[0], 0)
+                if wearable_feature_cols:
+                    wearable_features = torch.tensor(seq_data[wearable_feature_cols].values, dtype=torch.float32)
+
+                # Metadata - ensure all values are collate-able
                 metadata = {
                     'subject_id': subject_id,
-                    'timestamp': seq_data.iloc[-1]['timestamp'],
+                    'timestamp': str(seq_data.iloc[-1]['timestamp']), # Convert timestamp to string
                     'hour': seq_data.iloc[-1]['hour'],
                     'day_of_week': seq_data.iloc[-1]['day_of_week']
                 }
 
-                sequences.append((features, targets, metadata))
+
+                sequences.append((cgm_features, wearable_features, targets, metadata))
 
         return sequences
 
@@ -210,8 +269,10 @@ class AdvancedCGMDataset(Dataset):
                     features[f'fft_mag_{i}'] = 0
             return pd.Series(features)
 
-        fft_features = df.groupby('subject_id')['glucose'].apply(get_fft_features)
-        df = df.merge(fft_features, on='subject_id')
+
+        fft_features_series = df.groupby('subject_id')['glucose'].apply(get_fft_features)
+        fft_features_df = fft_features_series.unstack()
+        df = df.merge(fft_features_df, left_on='subject_id', right_index=True)
 
         return df
 
@@ -239,8 +300,10 @@ class AdvancedCGMDataset(Dataset):
             }
             return pd.Series(features)
 
-        wavelet_features = df.groupby('subject_id')['glucose'].apply(get_wavelet_features)
-        df = df.merge(wavelet_features, on='subject_id')
+
+        wavelet_features_series = df.groupby('subject_id')['glucose'].apply(get_wavelet_features)
+        wavelet_features_df = wavelet_features_series.unstack()
+        df = df.merge(wavelet_features_df, left_on='subject_id', right_index=True)
 
 
         return df
