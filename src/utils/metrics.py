@@ -1,368 +1,160 @@
-!pip install streamlit plotly
-
-import streamlit as st
-import plotly.graph_objs as go
-from datetime import datetime, timedelta
+import numpy as np
 import pandas as pd
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from typing import Dict, Tuple
 
-class GlucoGuardDashboard:
-    """Real-time monitoring dashboard"""
+def evaluate_model(model, X, y) -> Dict:
+    """Comprehensive model evaluation"""
     
-    def __init__(self, monitor_system):
-        self.monitor = monitor_system
-        self.session_data = []
-        
-    def run(self):
-        st.set_page_config(page_title="GlucoGuard AI", layout="wide")
-        
-        # Header
-        st.title("🛡️ GlucoGuard - AI Glucose & Complication Monitoring")
-        st.markdown("**Mandatory Wearable Integration: Empatica E4 + Dexcom G6**")
-        
-        # Real-time metrics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            current_glucose = st.empty()
-            trend_arrow = st.empty()
-        
-        with col2:
-            prediction_30min = st.empty()
-            confidence = st.empty()
-        
-        with col3:
-            risk_status = st.empty()
-            time_in_range = st.empty()
-        
-        with col4:
-            stress_level = st.empty()
-            activity_level = st.empty()
-        
-        # Main visualization area
-        glucose_plot = st.empty()
-        
-        # Alert section
-        alert_container = st.container()
-        
-        # Complication risk panel
-        st.sidebar.header("📊 Long-term Complication Risk")
-        retinopathy_risk = st.sidebar.empty()
-        nephropathy_risk = st.sidebar.empty()
-        neuropathy_risk = st.sidebar.empty()
-        cardiovascular_risk = st.sidebar.empty()
-        
-        # Update loop
-        while True:
-            # Get latest data
-            latest = self.monitor.get_latest_state()
-            
-            # Update metrics
-            current_glucose.metric(
-                "Current Glucose",
-                f"{latest['glucose']:.0f} mg/dL",
-                f"{latest['glucose_change']:.1f}"
-            )
-            
-            trend_arrow.markdown(
-                f"### Trend: {latest['trend_arrow_emoji']}"
-            )
-            
-            prediction_30min.metric(
-                "30-min Prediction",
-                f"{latest['prediction_30min']:.0f} mg/dL",
-                f"{latest['prediction_confidence']:.0f}%"
-            )
-            
-            # Risk assessment
-            risk_color = self._get_risk_color(latest['risk_level'])
-            risk_status.markdown(
-                f"<h3 style='color:{risk_color}'>{latest['risk_level']}</h3>",
-                unsafe_allow_html=True
-            )
-            
-            # E4 vitals
-            stress_level.metric(
-                "Stress Level",
-                f"{latest['stress_level']:.1f}/10",
-                "High" if latest['stress_level'] > 7 else "Normal"
-            )
-            
-            activity_level.metric(
-                "Activity",
-                latest['activity_category'],
-                f"{latest['steps_today']} steps"
-            )
-            
-            # Plot glucose with predictions
-            self._update_glucose_plot(glucose_plot, latest)
-            
-            # Display alerts
-            self._display_alerts(alert_container, latest['alerts'])
-            
-            # Update complication risks (daily)
-            if latest.get('complication_update'):
-                self._update_complication_panel(
-                    retinopathy_risk,
-                    nephropathy_risk,
-                    neuropathy_risk,
-                    cardiovascular_risk,
-                    latest['complications']
-                )
-            
-            time.sleep(60)  # Update every minute
+    predictions = model.predict(X)
     
-    def _update_glucose_plot(self, container, data):
-        """Update the main glucose visualization"""
-        fig = go.Figure()
-        
-        # Historical glucose
-        fig.add_trace(go.Scatter(
-            x=data['timestamps'],
-            y=data['glucose_history'],
-            name='Glucose',
-            line=dict(color='blue', width=2)
-        ))
-        
-        # Predictions
-        fig.add_trace(go.Scatter(
-            x=data['future_timestamps'],
-            y=data['predictions'],
-            name='Predicted',
-            line=dict(color='orange', width=2, dash='dash')
-        ))
-        
-        # Confidence bands
-        fig.add_trace(go.Scatter(
-            x=data['future_timestamps'],
-            y=data['upper_bound'],
-            fill=None,
-            mode='lines',
-            line_color='rgba(0,0,0,0)',
-            showlegend=False
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=data['future_timestamps'],
-            y=data['lower_bound'],
-            fill='tonexty',
-            mode='lines',
-            line_color='rgba(0,0,0,0)',
-            name='Confidence',
-            fillcolor='rgba(255,165,0,0.2)'
-        ))
-        
-        # Add threshold lines
-        fig.add_hline(y=70, line_dash="dot", line_color="red", 
-                     annotation_text="Hypo threshold")
-        fig.add_hline(y=180, line_dash="dot", line_color="orange", 
-                     annotation_text="Hyper threshold")
-        
-        # Add E4 context as subplot
-        fig.add_trace(go.Scatter(
-            x=data['timestamps'],
-            y=data['stress_history'],
-            name='Stress',
-            yaxis='y2',
-            line=dict(color='purple', width=1)
-        ))
-        
-        fig.update_layout(
-            title="Real-time Glucose Monitoring with E4 Context",
-            xaxis_title="Time",
-            yaxis_title="Glucose (mg/dL)",
-            yaxis2=dict(
-                title="Stress Level",
-                overlaying='y',
-                side='right'
-            ),
-            height=500
-        )
-        
-        container.plotly_chart(fig, use_container_width=True)
+    metrics = {
+        'mard': calculate_mard(y, predictions),
+        'rmse': np.sqrt(mean_squared_error(y, predictions)),
+        'mae': mean_absolute_error(y, predictions),
+        'r2': r2_score(y, predictions),
+        'clarke_ab': calculate_clarke_zones(y, predictions)['A+B']
+    }
+    
+    return metrics
 
+def calculate_mard(y_true, y_pred) -> float:
+    """Calculate Mean Absolute Relative Difference"""
+    
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    
+    # Avoid division by zero
+    mask = y_true > 0
+    
+    if not any(mask):
+        return 0.0
+    
+    mard = np.mean(np.abs(y_pred[mask] - y_true[mask]) / y_true[mask]) * 100
+    
+    return mard
 
+def calculate_clarke_zones(y_true, y_pred) -> Dict:
+    """Calculate Clarke Error Grid zones"""
+    
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    
+    # Initialize zone counts
+    zones = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'E': 0}
+    total = len(y_true)
+    
+    for actual, predicted in zip(y_true, y_pred):
+        zone = _get_clarke_zone(actual, predicted)
+        zones[zone] += 1
+    
+    # Convert to percentages
+    for zone in zones:
+        zones[zone] = (zones[zone] / total) * 100
+    
+    zones['A+B'] = zones['A'] + zones['B']
+    
+    return zones
 
-class ProductionFeatures:
-    """Production enhancements for reliability"""
+def _get_clarke_zone(actual, predicted) -> str:
+    """Determine Clarke Error Grid zone for a single point"""
     
-    def __init__(self):
-        self.error_handler = ErrorHandler()
-        self.data_validator = DataValidator()
-        self.model_monitor = ModelMonitor()
-        
-class ErrorHandler:
-    """Robust error handling"""
+    # Zone A: Clinically accurate
+    if abs(actual - predicted) <= 20:
+        return 'A'
     
-    def handle_missing_e4_data(self, e4_buffer):
-        """Handle Empatica E4 disconnections"""
-        if self._is_disconnected(e4_buffer):
-            # Use last known good values
-            return self._get_last_valid_e4_data()
-        
-        if self._is_partial_data(e4_buffer):
-            # Interpolate missing sensors
-            return self._interpolate_e4_data(e4_buffer)
-        
-        return e4_buffer
+    if actual >= 70 and predicted >= 70:
+        if abs((predicted - actual) / actual) <= 0.2:
+            return 'A'
     
-    def handle_cgm_gaps(self, cgm_data):
-        """Handle CGM data gaps"""
-        gap_size = self._detect_gap_size(cgm_data)
-        
-        if gap_size < 3:  # <15 minutes
-            return self._linear_interpolation(cgm_data)
-        elif gap_size < 12:  # <1 hour
-            return self._spline_interpolation(cgm_data)
-        else:
-            # Too large - mark as unreliable
-            return self._mark_unreliable(cgm_data)
+    # Zone B: Benign errors
+    if actual > 180 and predicted > 180:
+        return 'B'
+    
+    if actual < 70 and predicted < 70:
+        return 'B'
+    
+    if 70 <= actual <= 180 and abs(predicted - actual) <= 40:
+        return 'B'
+    
+    # Zone C: Overcorrection
+    if actual >= 70 and predicted < 70 and actual <= 180:
+        return 'C'
+    
+    if actual < 70 and predicted >= 180:
+        return 'C'
+    
+    # Zone D: Dangerous failure to detect
+    if actual < 70 and 70 <= predicted <= 180:
+        return 'D'
+    
+    if actual > 240 and 70 <= predicted <= 180:
+        return 'D'
+    
+    # Zone E: Dangerous errors
+    return 'E'
 
-class DataValidator:
-    """Validate incoming sensor data"""
+def calculate_surveillance_error_grid(y_true, y_pred) -> Dict:
+    """Calculate Surveillance Error Grid (more recent than Clarke)"""
     
-    def validate_glucose(self, value):
-        """Check if glucose value is physiologically possible"""
-        if not 20 <= value <= 600:
-            raise ValueError(f"Glucose {value} outside possible range")
-        
-        return value
+    # Implementation similar to Clarke but with updated zones
+    # This is a simplified version
     
-    def validate_e4_signals(self, e4_data):
-        """Validate E4 sensor readings"""
-        checks = {
-            'eda': 0.01 <= e4_data['eda'] <= 100,
-            'hr': 30 <= e4_data['hr'] <= 220,
-            'temp': 25 <= e4_data['temp'] <= 42,
-            'activity': e4_data['activity'] >= 0
-        }
-        
-        if not all(checks.values()):
-            failed = [k for k, v in checks.items() if not v]
-            raise ValueError(f"Invalid E4 data: {failed}")
-        
-        return True
+    zones = {'No_Risk': 0, 'Slight_Risk': 0, 'Moderate_Risk': 0, 'Great_Risk': 0}
+    
+    for actual, predicted in zip(y_true, y_pred):
+        risk = _get_surveillance_risk(actual, predicted)
+        zones[risk] += 1
+    
+    total = len(y_true)
+    for zone in zones:
+        zones[zone] = (zones[zone] / total) * 100
+    
+    return zones
 
-class ModelMonitor:
-    """Monitor model performance in production"""
+def _get_surveillance_risk(actual, predicted) -> str:
+    """Determine Surveillance Error Grid risk level"""
     
-    def __init__(self):
-        self.predictions = []
-        self.actuals = []
-        self.drift_detector = DriftDetector()
-        
-    def log_prediction(self, pred, features):
-        """Log predictions for monitoring"""
-        self.predictions.append({
-            'timestamp': datetime.now(),
-            'prediction': pred,
-            'features': features
-        })
-        
-    def check_drift(self, current_features):
-        """Detect feature/concept drift"""
-        if self.drift_detector.detect(current_features):
-            return {
-                'drift_detected': True,
-                'features_affected': self.drift_detector.get_drifted_features(),
-                'action': 'retrain_recommended'
-            }
-        return {'drift_detected': False}
-
-
-
-# test_glucoguard_complete.py
-
-def run_complete_validation():
-    """Complete system validation"""
+    error = abs(actual - predicted)
+    relative_error = error / (actual + 1e-8)
     
-    print("="*60)
-    print("🧪 GlucoGuard Complete System Validation")
-    print("="*60)
-    
-    # 1. Data Pipeline Test
-    print("\n1️⃣ Testing Data Pipeline...")
-    try:
-        data = load_big_ideas_dataset("path/to/data")
-        assert 'cgm' in data and 'e4' in data
-        print("   ✅ Data loading successful")
-    except Exception as e:
-        print(f"   ❌ Data loading failed: {e}")
-        return
-    
-    # 2. Feature Engineering Test
-    print("\n2️⃣ Testing Feature Engineering...")
-    e4_processor = EmpaticaE4Processor(BIGIDEAsConfig())
-    cgm_engineer = CGMFeatureEngineer()
-    
-    e4_features = e4_processor.process_all(data['e4'])
-    cgm_features = cgm_engineer.extract_all(data['cgm'])
-    
-    print(f"   ✅ Extracted {len(e4_features.columns)} E4 features")
-    print(f"   ✅ Extracted {len(cgm_features.columns)} CGM features")
-    
-    # 3. Model Performance Test
-    print("\n3️⃣ Testing Model Performance...")
-    X = pd.concat([cgm_features, e4_features], axis=1)
-    y = data['glucose_target_30min']
-    
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, shuffle=False
-    )
-    
-    predictor = EnhancedGlucosePredictor()
-    model = predictor.train_phase1_baseline(X_train[:30], y_train[:30])
-    
-    predictions = model.predict(X_test)
-    mard = calculate_mard(y_test, predictions)
-    r2 = r2_score(y_test, predictions)
-    
-    print(f"   MARD: {mard:.2f}% (Target: <10%)")
-    print(f"   R²: {r2:.3f} (Target: >0.70)")
-    
-    if mard < 10 and r2 > 0.70:
-        print("   ✅ Model performance meets targets!")
+    if error < 15 or relative_error < 0.15:
+        return 'No_Risk'
+    elif error < 30 or relative_error < 0.3:
+        return 'Slight_Risk'
+    elif error < 45 or relative_error < 0.4:
+        return 'Moderate_Risk'
     else:
-        print("   ⚠️ Model needs optimization")
-    
-    # 4. Alert System Test
-    print("\n4️⃣ Testing Alert System...")
-    alert_system = ContextAwareAlertSystem()
-    
-    test_states = [
-        {'glucose': 50, 'heart_rate': 110, 'stress_level': 8},
-        {'glucose': 250, 'heart_rate': 90, 'activity_level': 2},
-        {'glucose': 120, 'heart_rate': 70, 'stress_level': 3}
-    ]
-    
-    for state in test_states:
-        alerts = alert_system.evaluate_current_state(state)
-        print(f"   Glucose={state['glucose']}: {len(alerts)} alerts generated")
-    
-    # 5. Complication Prediction Test
-    print("\n5️⃣ Testing Complication Predictions...")
-    comp_predictor = ComplicationPredictor()
-    
-    sample_patient = {
-        'glucose': list(data['cgm']['glucose'][:288]),
-        'time_in_hyper': 25,
-        'mage': 65,
-        'diabetes_duration_years': 5,
-        'hrv_rmssd': 30
-    }
-    
-    complications = {
-        'retinopathy': comp_predictor.calculate_retinopathy_risk(sample_patient),
-        'nephropathy': comp_predictor.calculate_nephropathy_risk(sample_patient),
-        'neuropathy': comp_predictor.calculate_neuropathy_risk(sample_patient),
-        'cardiovascular': comp_predictor.calculate_cardiovascular_risk(sample_patient)
-    }
-    
-    for comp, risk in complications.items():
-        print(f"   {comp}: Risk Score = {risk['risk_score']:.1f}")
-    
-    print("\n" + "="*60)
-    print("🎉 Validation Complete!")
-    print("="*60)
+        return 'Great_Risk'
 
-if __name__ == "__main__":
-    run_complete_validation()
+def calculate_glycemic_risk_metrics(glucose_series: pd.Series) -> Dict:
+    """Calculate various glucose risk metrics"""
+    
+    metrics = {}
+    
+    # Low Blood Glucose Index (LBGI)
+    f_glucose = 1.509 * (np.log(glucose_series + 1e-8)**1.084 - 5.381)
+    rl = np.where(f_glucose < 0, 10 * f_glucose**2, 0)
+    metrics['lbgi'] = np.mean(rl)
+    
+    # High Blood Glucose Index (HBGI)
+    rh = np.where(f_glucose > 0, 10 * f_glucose**2, 0)
+    metrics['hbgi'] = np.mean(rh)
+    
+    # Average Daily Risk Range (ADRR)
+    metrics['adrr'] = metrics['lbgi'] + metrics['hbgi']
+    
+    # Glycemic Risk Assessment Diabetes Equation (GRADE)
+    grade_values = []
+    for g in glucose_series:
+        if g < 70.2:
+            grade = 10 * (np.log10(70.2) - np.log10(g)) ** 2
+        elif g > 140.4:
+            grade = 10 * (np.log10(g) - np.log10(140.4)) ** 2
+        else:
+            grade = 0
+        grade_values.append(grade)
+    
+    metrics['grade'] = np.mean(grade_values)
+    
+    return metrics
