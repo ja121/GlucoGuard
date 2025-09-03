@@ -1,3 +1,5 @@
+!pip install streamlit plotly
+
 import streamlit as st
 import plotly.graph_objs as go
 from datetime import datetime, timedelta
