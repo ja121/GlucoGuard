@@ -1,30 +1,27 @@
-# Core scientific computing
-numpy<2.0
-pandas==2.3.2
-scikit-learn==1.7.1
-matplotlib==3.10.5
-seaborn==0.13.2
-scipy==1.16.1
+requirements_fixed.txt# Core - exact versions that work together
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.2
+scipy==1.11.4
 
-# Deep Learning
-torch
-pytorch-lightning==2.2.0
+# XGBoost stack (your baseline)
+xgboost==2.0.3
+optuna==3.5.0
 
-# Advanced ML
-xgboost==3.0.4
-lightgbm==4.6.0
-optuna==4.5.0
+# Deep Learning (if you want to go beyond XGBoost)
+torch==2.1.2
+pytorch-lightning==2.1.3
+
+# Visualization
+matplotlib==3.7.2
+seaborn==0.12.2
+plotly==5.18.0
+
+# Signal Processing for Empatica E4
+heartpy==1.2.7  # HRV analysis
+neurokit2==0.2.7  # EDA processing
+pyhrv==0.4.1  # Advanced HRV
 
 # Time Series
-statsmodels==0.14.5
-PyWavelets==1.9.0
-
-# Transformers
-transformers==4.55.4
-einops==0.8.1
-
-# Monitoring & Debugging
-tensorboard==2.20.0
-wandb==0.21.2
-rich==14.1.0
-tqdm==4.67.1
+tslearn==0.6.2
+stumpy==1.12.0  # Matrix profiles
